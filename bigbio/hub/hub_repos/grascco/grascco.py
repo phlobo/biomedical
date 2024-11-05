@@ -77,10 +77,11 @@ _PUBMED = False
 _URLS = {
     _DATASETNAME: {
         "phi": "https://zenodo.org/records/11502329/files/grascco_phi_annotation_json.zip?download=1",
+        "snomed": ...,  # TODO: fix once it is updated
     },
 }
 
-_SUPPORTED_TASKS = [Tasks.NAMED_ENTITY_RECOGNITION]
+_SUPPORTED_TASKS = [Tasks.NAMED_ENTITY_RECOGNITION, Tasks.NAMED_ENTITY_DISAMBIGUATION, Tasks.RELATION_EXTRACTION]
 
 _SOURCE_VERSION = "1.0.0"
 
@@ -110,6 +111,20 @@ class GraSCCoDataset(datasets.GeneratorBasedBuilder):
             schema="bigbio_kb",
             subset_id="phi",
         ),
+        BigBioConfig(
+            name="grascco_snomed_source",
+            version=SOURCE_VERSION,
+            description="GraSCCo (SNOMED CT) source schema",
+            schema="source",
+            subset_id="snomed",
+        ),
+        BigBioConfig(
+            name="grascco_snomed_bigbio_kb",
+            version=BIGBIO_VERSION,
+            description="GraSCCo (SNOMED CT) BigBio schema",
+            schema="bigbio_kb",
+            subset_id="snomed",
+        ),
     ]
 
     DEFAULT_CONFIG_NAME = "grascco_phi_source"
@@ -130,6 +145,8 @@ class GraSCCoDataset(datasets.GeneratorBasedBuilder):
                             "name": datasets.Value("string"),
                             "uiName": datasets.Value("string"),
                             "documentTitle": datasets.Value("string"),
+                            "id": datasets.Value("string"),
+                            "literal": datasets.Value("string"),
                             "sofaString": datasets.Value("string"),
                         }
                     ],
@@ -150,15 +167,25 @@ class GraSCCoDataset(datasets.GeneratorBasedBuilder):
     def _split_generators(self, dl_manager) -> List[datasets.SplitGenerator]:
         """Returns SplitGenerators."""
 
-        urls = _URLS[_DATASETNAME][self.config.subset_id]
-        data_dir = dl_manager.download_and_extract(urls)
+        if self.config.data_dir is not None:
+            # Supports local data directory for non-public annotations
+            data_dir = Path(self.config.data_dir)
+            if not data_dir.exists():
+                raise FileNotFoundError(f"Data directory {data_dir} does not exist")
+        else:
+            if self.config.subset_id == "snomed":
+                raise ValueError(
+                    "SNOMED CT annotation layer is not yet available online."
+                    "Please pass the data_dir kwarg to load_dataset."
+                )
+            urls = _URLS[_DATASETNAME][self.config.subset_id]
+            data_dir = Path(dl_manager.download_and_extract(urls)) / "grascco_phi_annotation_json"
 
         return [
             datasets.SplitGenerator(
                 name=datasets.Split.TRAIN,
-                # Whatever you put in gen_kwargs will be passed to _generate_examples
                 gen_kwargs={
-                    "filepath": Path(data_dir) / "grascco_phi_annotation_json",
+                    "filepath": data_dir,
                 },
             ),
         ]
@@ -168,15 +195,23 @@ class GraSCCoDataset(datasets.GeneratorBasedBuilder):
         with open(filename, "r", encoding="utf-8") as f:
             uima_features = json.load(f)[_UIMA_FEATURES_KEY]
             phi_elements = []
+            concepts = []
+            relations = []
             for feature in uima_features:
                 if feature["%TYPE"] == "webanno.custom.PHI":
                     phi_elements.append(feature)
+                if feature["%TYPE"] == "gemtex.Concept":
+                    concepts.append(feature)
+                if feature["%TYPE"] == "gemtex.Relation":
+                    relations.append(feature)
                 if feature["%TYPE"] == "de.tudarmstadt.ukp.dkpro.core.api.metadata.type.DocumentMetaData":
                     document_title = feature["documentTitle"]
                 if feature["%TYPE"] == "uima.cas.Sofa":
                     document_text = feature["sofaString"]
             return {
                 "phi_elements": phi_elements,
+                "concepts": concepts,
+                "relations": relations,
                 "document_title": document_title,
                 "document_text": document_text,
                 "uima_features": uima_features,
@@ -214,6 +249,25 @@ class GraSCCoDataset(datasets.GeneratorBasedBuilder):
                                 "text": [text[e_start:e_end]],
                                 "offsets": [[e_start, e_end]],
                                 "normalized": [],
+                            }
+                        )
+                elif self.config.subset_id == "snomed":
+                    for concept in sorted(uima_parsed["concepts"], key=lambda p: p["begin"]):
+                        e_start = concept["begin"]
+                        e_end = concept["end"]
+                        eid = concept["%ID"]
+                        if "id" not in concept:
+                            logger.warning(
+                                f"'id' attribute missing in SNOMED CT concept with ID {eid} in document {doc_id}"
+                            )
+                            continue
+                        entities.append(
+                            {
+                                "id": f"{file_id}-{eid}",
+                                "type": "Literal" if concept.get("literal", None) else None,
+                                "text": [text[e_start:e_end]],
+                                "offsets": [[e_start, e_end]],
+                                "normalized": [{"db_name": "SNOMED CT", "db_id": concept["id"].split("/")[-1]}],
                             }
                         )
 
