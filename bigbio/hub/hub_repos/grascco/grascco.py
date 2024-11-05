@@ -148,6 +148,8 @@ class GraSCCoDataset(datasets.GeneratorBasedBuilder):
                             "id": datasets.Value("string"),
                             "literal": datasets.Value("string"),
                             "sofaString": datasets.Value("string"),
+                            "@Dependent": datasets.Value("int64"),
+                            "@Governor": datasets.Value("int64"),
                         }
                     ],
                 }
@@ -264,10 +266,26 @@ class GraSCCoDataset(datasets.GeneratorBasedBuilder):
                         entities.append(
                             {
                                 "id": f"{file_id}-{eid}",
-                                "type": "Literal" if concept.get("literal", None) else None,
+                                "type": "Literal" if concept.get("literal", None) else "Concept",
                                 "text": [text[e_start:e_end]],
                                 "offsets": [[e_start, e_end]],
                                 "normalized": [{"db_name": "SNOMED CT", "db_id": concept["id"].split("/")[-1]}],
+                            }
+                        )
+                    for relation in sorted(uima_parsed["relations"], key=lambda p: p["begin"]):
+                        rid = relation["%ID"]
+                        if "kind" not in relation:
+                            logger.warning(
+                                f"'kind' attribute missing in Relation element with ID {rid} in document {doc_id}"
+                            )
+                            continue
+                        relations.append(
+                            {
+                                "id": f"{file_id}-{rid}",
+                                "type": relation["kind"],
+                                "arg1_id": f"{file_id}-{relation['@Governor']}",
+                                "arg2_id": f"{file_id}-{relation['@Dependent']}",
+                                "normalized": [],
                             }
                         )
 
